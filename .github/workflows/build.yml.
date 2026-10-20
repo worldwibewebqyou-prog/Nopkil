@@ -1,0 +1,129 @@
+name: build
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create project files
+        run: |
+          mkdir -p src/main/java/com/example/spearlunge src/main/resources
+          mkdir -p src/main/resources/assets/spearlunge/lang
+          cat > src/main/resources/assets/spearlunge/lang/en_us.json <<'EOF'
+          {
+            "key.spearlunge.toggle": "Toggle Spear Lunge",
+            "key.spearlunge.swaplunge": "Swap to Spear and Lunge"
+          }
+          EOF
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  maven { url 'https://maven.fabricmc.net/' }
+                  gradlePluginPortal()
+              }
+          }
+          EOF
+          cat > gradle.properties <<'EOF'
+          minecraft_version=1.21.11
+          loader_version=0.18.1
+          fabric_version=0.140.0+1.21.11
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins { id 'fabric-loom' version '1.14-SNAPSHOT' }
+          version = '1.0'
+          base { archivesName = 'spearlunge' }
+          java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
+          dependencies {
+              minecraft "com.mojang:minecraft:${project.minecraft_version}"
+              mappings loom.officialMojangMappings()
+              modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+              modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+          }
+          EOF
+          cat > src/main/resources/fabric.mod.json <<'EOF'
+          {
+            "schemaVersion": 1,
+            "id": "spearlunge",
+            "version": "1.0",
+            "name": "Spear Lunge",
+            "environment": "client",
+            "entrypoints": { "client": ["com.example.spearlunge.SpearLunge"] },
+            "depends": { "fabricloader": ">=0.18.1", "minecraft": "1.21.11", "fabric-api": "*" }
+          }
+          EOF
+          cat > src/main/java/com/example/spearlunge/SpearLunge.java <<'EOF'
+          package com.example.spearlunge;
+
+          import com.mojang.blaze3d.platform.InputConstants;
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+          import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
+          import net.fabricmc.fabric.api.event.player.UseItemCallback;
+          import net.minecraft.client.KeyMapping;
+          import net.minecraft.core.registries.BuiltInRegistries;
+          import net.minecraft.network.chat.Component;
+          import net.minecraft.world.InteractionHand;
+          import net.minecraft.world.InteractionResult;
+          import net.minecraft.world.item.ItemStack;
+
+          public class SpearLunge implements ClientModInitializer {
+              static final double BOOST = 1.5;
+              static final int COOLDOWN = 0;
+              static int cd = 0;
+              static boolean enabled = true;
+
+              static boolean isSpear(ItemStack s) {
+                  var key = BuiltInRegistries.ITEM.getKey(s.getItem());
+                  return key.getPath().endsWith("_spear");
+              }
+
+              @Override
+              public void onInitializeClient() {
+                  KeyMapping toggle = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                      "key.spearlunge.toggle", InputConstants.Type.KEYSYM,
+                      InputConstants.KEY_R, KeyMapping.Category.MISC));
+                  KeyMapping swapLunge = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                      "key.spearlunge.swaplunge", InputConstants.Type.KEYSYM,
+                      InputConstants.KEY_V, KeyMapping.Category.MISC));
+
+                  ClientTickEvents.END_CLIENT_TICK.register(c -> {
+                      if (cd > 0) cd--;
+                      if (c.player == null || c.gameMode == null) return;
+
+                      while (toggle.consumeClick()) {
+                          enabled = !enabled;
+                          c.player.displayClientMessage(
+                              Component.literal("Spear Lunge: " + (enabled ? "ON" : "OFF")), true);
+                      }
+
+                      while (swapLunge.consumeClick()) {
+                          if (!enabled) continue;
+                          for (int i = 0; i < 9; i++) {
+                              if (isSpear(c.player.getInventory().getItem(i))) {
+                                  c.player.getInventory().setSelectedSlot(i);
+                                  c.gameMode.useItem(c.player, InteractionHand.MAIN_HAND);
+                                  break;
+                              }
+                          }
+                      }
+                  });
+
+                  UseItemCallback.EVENT.register((player, level, hand) -> {
+                      if (!enabled || !level.isClientSide() || cd > 0) return InteractionResult.PASS;
+                      if (!isSpear(player.getItemInHand(hand))) return InteractionResult.PASS;
+                      player.setDeltaMovement(player.getDeltaMovement().add(player.getLookAngle().scale(BOOST)));
+                      cd = COOLDOWN;
+                      return InteractionResult.PASS;
+                  });
+              }
+          }
+          EOF
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: 9.2.0 }
+      - run: gradle build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spearlunge
+          path: build/libs/spearlunge-1.0.jar
